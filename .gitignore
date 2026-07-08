@@ -43,3 +43,4 @@ Thumbs.db
 .idea/
 .vscode/
 docs/.rag_cache/
+*:Zone.Identifier
