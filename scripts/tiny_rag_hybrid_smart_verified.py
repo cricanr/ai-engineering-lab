@@ -59,6 +59,31 @@ class GroundedSource:
     text: str
 
 
+@dataclass(frozen=True)
+class RagConfig:
+    top_k: int = 4
+    max_chars: int = 2500
+    chat_model: str = DEFAULT_CHAT_MODEL
+    embed_model: str = DEFAULT_EMBED_MODEL
+    batch_size: int = 8
+    keyword_weight: float = 1.0
+    embedding_weight: float = 1.0
+    rank_constant: int = 60
+    refresh_cache: bool = False
+    show_smart_chunks: bool = False
+    show_raw_json: bool = False
+    skip_verification: bool = False
+
+
+@dataclass(frozen=True)
+class VerifiedRagResult:
+    chunks: list[DocumentChunk]
+    ranked_chunks: list[RankedChunk]
+    sources: dict[str, GroundedSource]
+    answer_data: dict[str, Any] | None
+    verification_data: dict[str, Any] | None
+
+
 def smart_text_for_retrieval(kind: str, title: str, text: str) -> str:
     return f"Kind: {kind}\nTitle: {title}\n\n{text}"
 
@@ -453,6 +478,102 @@ def print_smart_chunk_summary(chunks: list[DocumentChunk]) -> None:
         )
 
 
+def run_verified_rag(
+    path: Path,
+    question: str,
+    config: RagConfig,
+    *,
+    show_progress: bool = False,
+) -> VerifiedRagResult:
+    chunks = load_smart_chunks(path, max_chars=config.max_chars)
+    if not chunks:
+        return VerifiedRagResult(
+            chunks=[],
+            ranked_chunks=[],
+            sources={},
+            answer_data=None,
+            verification_data=None,
+        )
+
+    if show_progress:
+        print(f"Chat/verifier model: {config.chat_model}")
+        print(f"Embedding model: {config.embed_model}")
+        print(f"Loaded smart chunks: {len(chunks)}")
+
+        if config.show_smart_chunks:
+            print_smart_chunk_summary(chunks)
+
+        print("Running keyword retrieval over smart chunks...")
+
+    keyword_ranking = keyword_rank(question, chunks)
+
+    if show_progress:
+        print("Preparing smart chunk embeddings...")
+
+    chunk_embeddings = embed_chunks(
+        root=path,
+        chunks=chunks,
+        embed_model=config.embed_model,
+        batch_size=config.batch_size,
+        refresh_cache=config.refresh_cache,
+    )
+
+    if show_progress:
+        print("Running embedding retrieval over smart chunks...")
+
+    embedding_ranking = embedding_rank(
+        question=question,
+        chunks=chunks,
+        chunk_embeddings=chunk_embeddings,
+        embed_model=config.embed_model,
+    )
+
+    ranked_chunks = hybrid_rank(
+        chunks=chunks,
+        keyword_ranking=keyword_ranking,
+        embedding_ranking=embedding_ranking,
+        keyword_weight=config.keyword_weight,
+        embedding_weight=config.embedding_weight,
+        rank_constant=config.rank_constant,
+        top_k=config.top_k,
+    )
+
+    if not ranked_chunks:
+        return VerifiedRagResult(
+            chunks=chunks,
+            ranked_chunks=[],
+            sources={},
+            answer_data=None,
+            verification_data=None,
+        )
+
+    sources = make_grounded_sources(ranked_chunks)
+    answer_prompt = build_grounded_prompt(question, ranked_chunks, sources)
+
+    raw_answer = call_ollama_chat(answer_prompt, model=config.chat_model)
+    parsed_answer = extract_first_json_object(raw_answer)
+    answer_data = normalize_answer_json(parsed_answer)
+
+    verification_data: dict[str, Any] | None = None
+    if not config.skip_verification:
+        verification_prompt = build_verification_prompt(
+            question=question,
+            answer_data=answer_data,
+            sources=sources,
+        )
+        raw_verification = call_ollama_chat(verification_prompt, model=config.chat_model)
+        parsed_verification = extract_first_json_object(raw_verification)
+        verification_data = normalize_verification_json(parsed_verification)
+
+    return VerifiedRagResult(
+        chunks=chunks,
+        ranked_chunks=ranked_chunks,
+        sources=sources,
+        answer_data=answer_data,
+        verification_data=verification_data,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
@@ -525,85 +646,54 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    chunks = load_smart_chunks(args.path, max_chars=args.max_chars)
-    if not chunks:
-        print(f"No supported text files found under: {args.path}")
-        return
-
-    print(f"Chat/verifier model: {args.chat_model}")
-    print(f"Embedding model: {args.embed_model}")
-    print(f"Loaded smart chunks: {len(chunks)}")
-
-    if args.show_smart_chunks:
-        print_smart_chunk_summary(chunks)
-
     try:
-        print("Running keyword retrieval over smart chunks...")
-        keyword_ranking = keyword_rank(args.question, chunks)
-
-        print("Preparing smart chunk embeddings...")
-        chunk_embeddings = embed_chunks(
-            root=args.path,
-            chunks=chunks,
+        config = RagConfig(
+            top_k=args.top_k,
+            max_chars=args.max_chars,
+            chat_model=args.chat_model,
             embed_model=args.embed_model,
             batch_size=args.batch_size,
-            refresh_cache=args.refresh_cache,
-        )
-
-        print("Running embedding retrieval over smart chunks...")
-        embedding_ranking = embedding_rank(
-            question=args.question,
-            chunks=chunks,
-            chunk_embeddings=chunk_embeddings,
-            embed_model=args.embed_model,
-        )
-
-        ranked_chunks = hybrid_rank(
-            chunks=chunks,
-            keyword_ranking=keyword_ranking,
-            embedding_ranking=embedding_ranking,
             keyword_weight=args.keyword_weight,
             embedding_weight=args.embedding_weight,
             rank_constant=args.rank_constant,
-            top_k=args.top_k,
+            refresh_cache=args.refresh_cache,
+            show_smart_chunks=args.show_smart_chunks,
+            show_raw_json=args.show_raw_json,
+            skip_verification=args.skip_verification,
+        )
+        result = run_verified_rag(
+            path=args.path,
+            question=args.question,
+            config=config,
+            show_progress=True,
         )
 
-        if not ranked_chunks:
+        if not result.chunks:
+            print(f"No supported text files found under: {args.path}")
+            return
+
+        if not result.ranked_chunks:
             print("No chunks were retrieved.")
             return
 
-        print_ranked_chunks(ranked_chunks)
+        print_ranked_chunks(result.ranked_chunks)
 
-        sources = make_grounded_sources(ranked_chunks)
-        answer_prompt = build_grounded_prompt(args.question, ranked_chunks, sources)
-
-        raw_answer = call_ollama_chat(answer_prompt, model=args.chat_model)
-        parsed_answer = extract_first_json_object(raw_answer)
-        answer_data = normalize_answer_json(parsed_answer)
-
-        if args.show_raw_json:
+        if config.show_raw_json and result.answer_data is not None:
             print("\n=== Raw parsed answer JSON ===\n")
-            print(json.dumps(answer_data, indent=2))
+            print(json.dumps(result.answer_data, indent=2))
 
-        print_grounded_answer(answer_data, sources)
+        if result.answer_data is not None:
+            print_grounded_answer(result.answer_data, result.sources)
 
-        if args.skip_verification:
+        if config.skip_verification:
             return
 
-        verification_prompt = build_verification_prompt(
-            question=args.question,
-            answer_data=answer_data,
-            sources=sources,
-        )
-        raw_verification = call_ollama_chat(verification_prompt, model=args.chat_model)
-        parsed_verification = extract_first_json_object(raw_verification)
-        verification_data = normalize_verification_json(parsed_verification)
-
-        if args.show_raw_json:
+        if config.show_raw_json and result.verification_data is not None:
             print("\n=== Raw parsed verification JSON ===\n")
-            print(json.dumps(verification_data, indent=2))
+            print(json.dumps(result.verification_data, indent=2))
 
-        print_verification_result(verification_data, sources)
+        if result.verification_data is not None:
+            print_verification_result(result.verification_data, result.sources)
 
     except Exception as error:
         print(f"Error: {error}", file=sys.stderr)
