@@ -404,7 +404,13 @@ def hybrid_rank(
     return sorted(ranked, key=lambda item: item.hybrid_score, reverse=True)[:top_k]
 
 
-def call_ollama_chat(prompt: str, model: str) -> str:
+def call_ollama_chat(
+    prompt: str,
+    model: str,
+    *,
+    json_mode: bool = False,
+    think: bool | None = None,
+) -> str:
     payload = {
         "model": model,
         "stream": False,
@@ -424,6 +430,12 @@ def call_ollama_chat(prompt: str, model: str) -> str:
             "num_ctx": 8192,
         },
     }
+
+    if json_mode:
+        payload["format"] = "json"
+
+    if think is not None:
+        payload["think"] = think
 
     request = urllib.request.Request(
         OLLAMA_CHAT_URL,

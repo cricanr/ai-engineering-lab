@@ -1,0 +1,34 @@
+[
+  {
+    "id": "what_is_rag",
+    "question": "What is RAG?",
+    "expected_sources": ["rag.md"],
+    "required_terms": ["retrieval", "context", "generation"],
+    "expect_insufficient_context": false,
+    "expected_support_status": "supported"
+  },
+  {
+    "id": "verified_rag_flow",
+    "question": "How does the verified RAG flow work?",
+    "expected_sources": ["verified_rag_flow.md"],
+    "required_terms": ["answer", "support"],
+    "expect_insufficient_context": false,
+    "expected_support_status": "supported"
+  },
+  {
+    "id": "why_hybrid_retrieval",
+    "question": "How does hybrid retrieval combine keyword and embedding retrieval?",
+    "expected_sources": ["verified_rag_flow.md", "models.md"],
+    "required_terms": ["keyword", "embedding"],
+    "expect_insufficient_context": false,
+    "expected_support_status": "supported"
+  },
+  {
+    "id": "unsupported_capital_of_japan",
+    "question": "What is the capital of Japan?",
+    "expected_sources": [],
+    "required_terms": [],
+    "expect_insufficient_context": true,
+    "expected_support_status": ["supported"]
+  }
+]

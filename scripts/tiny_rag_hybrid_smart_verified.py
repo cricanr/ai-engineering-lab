@@ -550,7 +550,12 @@ def run_verified_rag(
     sources = make_grounded_sources(ranked_chunks)
     answer_prompt = build_grounded_prompt(question, ranked_chunks, sources)
 
-    raw_answer = call_ollama_chat(answer_prompt, model=config.chat_model)
+    raw_answer = call_ollama_chat(
+        answer_prompt,
+        model=config.chat_model,
+        json_mode=True,
+        think=False,
+    )
     parsed_answer = extract_first_json_object(raw_answer)
     answer_data = normalize_answer_json(parsed_answer)
 
@@ -561,7 +566,12 @@ def run_verified_rag(
             answer_data=answer_data,
             sources=sources,
         )
-        raw_verification = call_ollama_chat(verification_prompt, model=config.chat_model)
+        raw_verification = call_ollama_chat(
+            verification_prompt,
+            model=config.chat_model,
+            json_mode=True,
+            think=False,
+        )
         parsed_verification = extract_first_json_object(raw_verification)
         verification_data = normalize_verification_json(parsed_verification)
 
