@@ -264,9 +264,66 @@ def make_case_report(
     return {
         "id": case_id,
         "passed": success,
+        "expected_sources": diagnostics.expected_sources,
+        "retrieved_sources": diagnostics.retrieved_sources,
         "verification_status": diagnostics.actual_support_status,
+        "expected_verification_status": diagnostics.expected_support_status,
         "insufficient_context": diagnostics.actual_insufficient_context,
+        "expected_insufficient_context": diagnostics.expected_insufficient_context,
         "cited_sources": diagnostics.cited_sources,
+    }
+
+
+def rate(matches: int, total: int) -> float:
+    return matches / total if total else 0.0
+
+
+def source_hit(expected_sources: list[str], actual_sources: Any) -> bool:
+    expected = {normalize_source_name(source) for source in expected_sources}
+    actual = {
+        normalize_source_name(source)
+        for source in actual_sources or []
+        if isinstance(source, str)
+    }
+    return bool(expected & actual)
+
+
+def verification_status_matches(expected: Any, actual: Any) -> bool:
+    if expected is None:
+        return actual is None
+    allowed = normalize_expected_support_statuses(expected)
+    return actual in allowed
+
+
+def calculate_metrics(case_reports: list[dict[str, Any]]) -> dict[str, float]:
+    source_cases = [case for case in case_reports if case["expected_sources"]]
+    retrieval_hits = sum(
+        source_hit(case["expected_sources"], case["retrieved_sources"])
+        for case in source_cases
+    )
+    citation_hits = sum(
+        source_hit(case["expected_sources"], case["cited_sources"])
+        for case in source_cases
+    )
+    insufficient_context_matches = sum(
+        case["insufficient_context"] == case["expected_insufficient_context"]
+        for case in case_reports
+    )
+    verification_matches = sum(
+        verification_status_matches(
+            case["expected_verification_status"], case["verification_status"]
+        )
+        for case in case_reports
+    )
+    return {
+        "retrieval_hit_rate": rate(retrieval_hits, len(source_cases)),
+        "citation_hit_rate": rate(citation_hits, len(source_cases)),
+        "insufficient_context_accuracy": rate(
+            insufficient_context_matches, len(case_reports)
+        ),
+        "verification_status_accuracy": rate(
+            verification_matches, len(case_reports)
+        ),
     }
 
 
@@ -277,6 +334,7 @@ def make_report(
     case_reports: list[dict[str, Any]],
 ) -> dict[str, Any]:
     total = passed + failed
+    metrics = calculate_metrics(case_reports)
     return {
         "summary": {
             "passed": passed,
@@ -284,6 +342,7 @@ def make_report(
             "total": total,
             "pass_rate": passed / total if total else 0.0,
             "total_duration_seconds": duration_seconds,
+            **metrics,
         },
         "cases": case_reports,
     }
@@ -505,6 +564,17 @@ def main() -> None:
     report = make_report(passed, failed, duration_seconds, case_reports)
     print()
     print(f"Summary: {passed} passed, {failed} failed, {len(cases)} total")
+    summary = report["summary"]
+    print(f"  Retrieval hit rate: {summary['retrieval_hit_rate']:.1%}")
+    print(f"  Citation hit rate: {summary['citation_hit_rate']:.1%}")
+    print(
+        "  Insufficient-context accuracy: "
+        f"{summary['insufficient_context_accuracy']:.1%}"
+    )
+    print(
+        "  Verification-status accuracy: "
+        f"{summary['verification_status_accuracy']:.1%}"
+    )
 
     if args.report_file is not None:
         try:
