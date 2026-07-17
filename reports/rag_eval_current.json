@@ -1,0 +1,45 @@
+{
+  "summary": {
+    "passed": 4,
+    "failed": 0,
+    "total": 4,
+    "pass_rate": 1.0,
+    "total_duration_seconds": 18.12302315800025
+  },
+  "cases": [
+    {
+      "id": "what_is_rag",
+      "passed": true,
+      "verification_status": "supported",
+      "insufficient_context": false,
+      "cited_sources": [
+        "rag.md"
+      ]
+    },
+    {
+      "id": "verified_rag_flow",
+      "passed": true,
+      "verification_status": "supported",
+      "insufficient_context": false,
+      "cited_sources": [
+        "verified_rag_flow.md"
+      ]
+    },
+    {
+      "id": "why_hybrid_retrieval",
+      "passed": true,
+      "verification_status": "supported",
+      "insufficient_context": false,
+      "cited_sources": [
+        "hybrid_retrieval.md"
+      ]
+    },
+    {
+      "id": "unsupported_capital_of_japan",
+      "passed": true,
+      "verification_status": "supported",
+      "insufficient_context": true,
+      "cited_sources": []
+    }
+  ]
+}

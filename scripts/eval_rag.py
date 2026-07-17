@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,10 @@ from tiny_rag_hybrid_smart_verified import RagConfig, run_verified_rag
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_KNOWLEDGE_PATH = REPO_ROOT / "docs"
 DEFAULT_CASES_PATH = REPO_ROOT / "evals" / "rag_cases.json"
+
+
+class BaselineReportError(ValueError):
+    pass
 
 
 @dataclass
@@ -238,16 +243,231 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Print diagnostic details for passing cases as well as failures.",
     )
+    parser.add_argument(
+        "--baseline-report",
+        type=Path,
+        help="Compare this run with a previous JSON evaluation report.",
+    )
+    parser.add_argument(
+        "--report-file",
+        type=Path,
+        help="Write this run's evaluation report as JSON.",
+    )
     return parser.parse_args()
+
+
+def make_case_report(
+    case_id: str,
+    success: bool,
+    diagnostics: CaseDiagnostics,
+) -> dict[str, Any]:
+    return {
+        "id": case_id,
+        "passed": success,
+        "verification_status": diagnostics.actual_support_status,
+        "insufficient_context": diagnostics.actual_insufficient_context,
+        "cited_sources": diagnostics.cited_sources,
+    }
+
+
+def make_report(
+    passed: int,
+    failed: int,
+    duration_seconds: float,
+    case_reports: list[dict[str, Any]],
+) -> dict[str, Any]:
+    total = passed + failed
+    return {
+        "summary": {
+            "passed": passed,
+            "failed": failed,
+            "total": total,
+            "pass_rate": passed / total if total else 0.0,
+            "total_duration_seconds": duration_seconds,
+        },
+        "cases": case_reports,
+    }
+
+
+def load_baseline_report(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            report = json.load(handle)
+    except FileNotFoundError as error:
+        raise BaselineReportError(f"baseline report does not exist: {path}") from error
+    except OSError as error:
+        raise BaselineReportError(f"could not read baseline report {path}: {error}") from error
+    except json.JSONDecodeError as error:
+        raise BaselineReportError(
+            f"baseline report is not valid JSON ({path}:{error.lineno}:{error.colno}): "
+            f"{error.msg}"
+        ) from error
+
+    if not isinstance(report, dict):
+        raise BaselineReportError("baseline report root must be a JSON object")
+    summary = report.get("summary")
+    cases = report.get("cases")
+    if not isinstance(summary, dict):
+        raise BaselineReportError("baseline report field 'summary' must be an object")
+    for field in ("pass_rate", "total_duration_seconds"):
+        value = summary.get(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise BaselineReportError(
+                f"baseline report summary.{field} must be a number"
+            )
+    if not 0.0 <= summary["pass_rate"] <= 1.0:
+        raise BaselineReportError("baseline report summary.pass_rate must be between 0 and 1")
+    if summary["total_duration_seconds"] < 0:
+        raise BaselineReportError(
+            "baseline report summary.total_duration_seconds cannot be negative"
+        )
+    if not isinstance(cases, list):
+        raise BaselineReportError("baseline report field 'cases' must be an array")
+
+    seen_ids: set[str] = set()
+    for index, case in enumerate(cases, start=1):
+        if not isinstance(case, dict):
+            raise BaselineReportError(f"baseline report case #{index} must be an object")
+        case_id = case.get("id")
+        if not isinstance(case_id, str) or not case_id:
+            raise BaselineReportError(
+                f"baseline report case #{index}.id must be a non-empty string"
+            )
+        if case_id in seen_ids:
+            raise BaselineReportError(f"baseline report has duplicate case id: {case_id}")
+        seen_ids.add(case_id)
+        if not isinstance(case.get("passed"), bool):
+            raise BaselineReportError(
+                f"baseline report case {case_id!r}.passed must be a boolean"
+            )
+        if "verification_status" not in case:
+            raise BaselineReportError(
+                f"baseline report case {case_id!r} is missing verification_status"
+            )
+        if not isinstance(case["verification_status"], (str, type(None))):
+            raise BaselineReportError(
+                f"baseline report case {case_id!r}.verification_status "
+                "must be a string or null"
+            )
+        if "insufficient_context" not in case:
+            raise BaselineReportError(
+                f"baseline report case {case_id!r} is missing insufficient_context"
+            )
+        if not isinstance(case["insufficient_context"], (bool, type(None))):
+            raise BaselineReportError(
+                f"baseline report case {case_id!r}.insufficient_context "
+                "must be a boolean or null"
+            )
+        cited_sources = case.get("cited_sources")
+        if not (
+            cited_sources is None
+            or (
+                isinstance(cited_sources, list)
+                and all(isinstance(source, str) for source in cited_sources)
+            )
+        ):
+            raise BaselineReportError(
+                f"baseline report case {case_id!r}.cited_sources "
+                "must be an array of strings or null"
+            )
+    return report
+
+
+def changed_case_ids(
+    previous_cases: dict[str, dict[str, Any]],
+    current_cases: dict[str, dict[str, Any]],
+    field: str,
+) -> list[str]:
+    def comparable(value: Any) -> Any:
+        if field == "cited_sources" and isinstance(value, list):
+            return sorted(value)
+        return value
+
+    return sorted(
+        case_id
+        for case_id in previous_cases.keys() & current_cases.keys()
+        if comparable(previous_cases[case_id][field])
+        != comparable(current_cases[case_id][field])
+    )
+
+
+def print_comparison(
+    baseline: dict[str, Any], current: dict[str, Any]
+) -> list[str]:
+    previous_summary = baseline["summary"]
+    current_summary = current["summary"]
+    previous_cases = {case["id"]: case for case in baseline["cases"]}
+    current_cases = {case["id"]: case for case in current["cases"]}
+    shared_ids = previous_cases.keys() & current_cases.keys()
+    newly_passing = sorted(
+        case_id
+        for case_id in shared_ids
+        if not previous_cases[case_id]["passed"] and current_cases[case_id]["passed"]
+    )
+    newly_failing = sorted(
+        case_id
+        for case_id in shared_ids
+        if previous_cases[case_id]["passed"] and not current_cases[case_id]["passed"]
+    )
+    pass_rate_change = (
+        current_summary["pass_rate"] - previous_summary["pass_rate"]
+    )
+    duration_change = (
+        current_summary["total_duration_seconds"]
+        - previous_summary["total_duration_seconds"]
+    )
+
+    print()
+    print("Comparison with baseline:")
+    print(f"  Previous pass rate: {previous_summary['pass_rate']:.1%}")
+    print(f"  Current pass rate: {current_summary['pass_rate']:.1%}")
+    print(f"  Pass-rate change: {pass_rate_change:+.1%}")
+    print(
+        "  Previous total duration: "
+        f"{previous_summary['total_duration_seconds']:.3f}s"
+    )
+    print(f"  Current total duration: {current_summary['total_duration_seconds']:.3f}s")
+    print(f"  Duration change: {duration_change:+.3f}s")
+    print(f"  Newly passing cases: {format_value(newly_passing)}")
+    print(f"  Newly failing cases: {format_value(newly_failing)}")
+    print(
+        "  Verification status changed: "
+        f"{format_value(changed_case_ids(previous_cases, current_cases, 'verification_status'))}"
+    )
+    print(
+        "  insufficient_context changed: "
+        f"{format_value(changed_case_ids(previous_cases, current_cases, 'insufficient_context'))}"
+    )
+    print(
+        "  Cited sources changed: "
+        f"{format_value(changed_case_ids(previous_cases, current_cases, 'cited_sources'))}"
+    )
+    if newly_failing:
+        print()
+        print("REGRESSION: previously passing cases now fail")
+        for case_id in newly_failing:
+            print(f"  - {case_id}")
+    return newly_failing
 
 
 def main() -> None:
     args = parse_args()
-    cases = load_cases(args.cases)
+    try:
+        cases = load_cases(args.cases)
+        baseline = (
+            load_baseline_report(args.baseline_report)
+            if args.baseline_report is not None
+            else None
+        )
+    except (OSError, json.JSONDecodeError, ValueError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(2)
     config = RagConfig()
 
     passed = 0
     failed = 0
+    case_reports: list[dict[str, Any]] = []
+    started_at = time.perf_counter()
 
     print(f"Knowledge path: {args.path}")
     print(f"Cases file: {args.cases}")
@@ -275,16 +495,32 @@ def main() -> None:
             print(f"PASS {case_id}")
             if args.show_details:
                 print_diagnostics(diagnostics, issues)
-            continue
+        else:
+            failed += 1
+            print(f"FAIL {case_id}")
+            print_diagnostics(diagnostics, issues)
+        case_reports.append(make_case_report(case_id, success, diagnostics))
 
-        failed += 1
-        print(f"FAIL {case_id}")
-        print_diagnostics(diagnostics, issues)
-
+    duration_seconds = time.perf_counter() - started_at
+    report = make_report(passed, failed, duration_seconds, case_reports)
     print()
     print(f"Summary: {passed} passed, {failed} failed, {len(cases)} total")
 
-    if failed:
+    if args.report_file is not None:
+        try:
+            args.report_file.parent.mkdir(parents=True, exist_ok=True)
+            with args.report_file.open("w", encoding="utf-8") as handle:
+                json.dump(report, handle, indent=2, ensure_ascii=False)
+                handle.write("\n")
+        except OSError as error:
+            print(
+                f"Error: could not write report {args.report_file}: {error}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
+    regressions = print_comparison(baseline, report) if baseline is not None else []
+    if failed or regressions:
         sys.exit(1)
 
 
