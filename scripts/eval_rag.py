@@ -5,7 +5,8 @@ import argparse
 import json
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ class CaseDiagnostics:
     missing_required_terms: list[str] | None = None
     exception_type: str | None = None
     exception_message: str | None = None
+    failure_categories: list[str] = field(default_factory=list)
 
 
 def load_cases(cases_path: Path) -> list[dict[str, Any]]:
@@ -105,12 +107,17 @@ def evaluate_case(
     )
 
     issues: list[str] = []
+
+    def add_issue(category: str, message: str) -> None:
+        issues.append(message)
+        diagnostics.failure_categories.append(category)
+
     diagnostics.retrieved_sources = sorted(
         {ranked_chunk.chunk.source.name for ranked_chunk in result.ranked_chunks}
     )
 
     if not result.answer_data:
-        issues.append("No answer data was returned.")
+        add_issue("missing_answer_data", "No answer data was returned.")
         return False, issues, diagnostics
 
     diagnostics.answer_text = result.answer_data["answer"]
@@ -142,7 +149,8 @@ def evaluate_case(
             normalized_source not in retrieved_source_names
             and normalized_source not in cited_source_names
         ):
-            issues.append(
+            add_issue(
+                "missing_expected_source",
                 "Expected source not retrieved or cited: "
                 f"{expected_source} "
                 f"(retrieved={sorted(retrieved_source_names)}, "
@@ -152,10 +160,14 @@ def evaluate_case(
     for required_term in case["required_terms"]:
         if required_term.lower() not in answer_text:
             diagnostics.missing_required_terms.append(required_term)
-            issues.append(f"Required term missing from answer: {required_term}")
+            add_issue(
+                "missing_required_term",
+                f"Required term missing from answer: {required_term}",
+            )
 
     if result.answer_data["insufficient_context"] != case["expect_insufficient_context"]:
-        issues.append(
+        add_issue(
+            "insufficient_context_mismatch",
             "Unexpected insufficient_context value: "
             f"expected {case['expect_insufficient_context']}, "
             f"got {result.answer_data['insufficient_context']}"
@@ -164,14 +176,17 @@ def evaluate_case(
     expected_support_status = case["expected_support_status"]
     if expected_support_status is not None:
         if not result.verification_data:
-            issues.append("No verification data was returned.")
+            add_issue(
+                "missing_verification_data", "No verification data was returned."
+            )
         else:
             expected_statuses = normalize_expected_support_statuses(
                 expected_support_status
             )
             actual_support_status = result.verification_data["support_status"]
             if actual_support_status not in expected_statuses:
-                issues.append(
+                add_issue(
+                    "support_status_mismatch",
                     "Unexpected support status: "
                     f"expected one of {expected_statuses}, got {actual_support_status}"
                 )
@@ -249,8 +264,11 @@ def parse_args() -> argparse.Namespace:
         help="Compare this run with a previous JSON evaluation report.",
     )
     parser.add_argument(
+        "--report-json",
         "--report-file",
+        dest="report_file",
         type=Path,
+        metavar="PATH",
         help="Write this run's evaluation report as JSON.",
     )
     return parser.parse_args()
@@ -260,10 +278,13 @@ def make_case_report(
     case_id: str,
     success: bool,
     diagnostics: CaseDiagnostics,
+    issues: list[str] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": case_id,
         "passed": success,
+        "question": diagnostics.question,
+        "answer_text": diagnostics.answer_text,
         "expected_sources": diagnostics.expected_sources,
         "retrieved_sources": diagnostics.retrieved_sources,
         "verification_status": diagnostics.actual_support_status,
@@ -271,6 +292,11 @@ def make_case_report(
         "insufficient_context": diagnostics.actual_insufficient_context,
         "expected_insufficient_context": diagnostics.expected_insufficient_context,
         "cited_sources": diagnostics.cited_sources,
+        "missing_required_terms": diagnostics.missing_required_terms,
+        "exception_type": diagnostics.exception_type,
+        "exception_message": diagnostics.exception_message,
+        "issues": issues or [],
+        "failure_categories": sorted(set(diagnostics.failure_categories)),
     }
 
 
@@ -332,16 +358,32 @@ def make_report(
     failed: int,
     duration_seconds: float,
     case_reports: list[dict[str, Any]],
+    knowledge_path: Path = DEFAULT_KNOWLEDGE_PATH,
+    cases_path: Path = DEFAULT_CASES_PATH,
+    config: RagConfig | None = None,
 ) -> dict[str, Any]:
+    config = config or RagConfig()
     total = passed + failed
     metrics = calculate_metrics(case_reports)
+    failure_category_counts: dict[str, int] = {}
+    for case_report in case_reports:
+        for category in case_report["failure_categories"]:
+            failure_category_counts[category] = (
+                failure_category_counts.get(category, 0) + 1
+            )
     return {
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "knowledge_path": str(knowledge_path),
+        "cases_file": str(cases_path),
+        "chat_model": config.chat_model,
+        "embedding_model": config.embed_model,
         "summary": {
             "passed": passed,
             "failed": failed,
             "total": total,
             "pass_rate": passed / total if total else 0.0,
             "total_duration_seconds": duration_seconds,
+            "failure_category_counts": failure_category_counts,
             **metrics,
         },
         "cases": case_reports,
@@ -548,6 +590,7 @@ def main() -> None:
             issues = [f"Exception: {error}"]
             diagnostics.exception_type = type(error).__name__
             diagnostics.exception_message = str(error)
+            diagnostics.failure_categories.append("exception")
 
         if success:
             passed += 1
@@ -558,10 +601,18 @@ def main() -> None:
             failed += 1
             print(f"FAIL {case_id}")
             print_diagnostics(diagnostics, issues)
-        case_reports.append(make_case_report(case_id, success, diagnostics))
+        case_reports.append(make_case_report(case_id, success, diagnostics, issues))
 
     duration_seconds = time.perf_counter() - started_at
-    report = make_report(passed, failed, duration_seconds, case_reports)
+    report = make_report(
+        passed,
+        failed,
+        duration_seconds,
+        case_reports,
+        args.path,
+        args.cases,
+        config,
+    )
     print()
     print(f"Summary: {passed} passed, {failed} failed, {len(cases)} total")
     summary = report["summary"]

@@ -1,0 +1,122 @@
+{
+  "timestamp_utc": "2026-07-20T16:58:49.793409+00:00",
+  "knowledge_path": "/home/radu/sources/ai-engineering-lab/docs",
+  "cases_file": "/home/radu/sources/ai-engineering-lab/evals/rag_cases.json",
+  "chat_model": "qwen3:14b-q4_K_M",
+  "embedding_model": "embeddinggemma",
+  "summary": {
+    "passed": 4,
+    "failed": 0,
+    "total": 4,
+    "pass_rate": 1.0,
+    "total_duration_seconds": 40.50703688699991,
+    "failure_category_counts": {},
+    "retrieval_hit_rate": 1.0,
+    "citation_hit_rate": 1.0,
+    "insufficient_context_accuracy": 1.0,
+    "verification_status_accuracy": 1.0
+  },
+  "cases": [
+    {
+      "id": "what_is_rag",
+      "passed": true,
+      "question": "What is RAG?",
+      "answer_text": "RAG means Retrieval-Augmented Generation. Instead of sending everything to the model, we first search for relevant chunks. Then we send only the best chunks to the model as context. This helps with larger documents, lower cost, smaller prompts, and more grounded answers.",
+      "expected_sources": [
+        "rag.md"
+      ],
+      "retrieved_sources": [
+        "intro.md",
+        "rag.md",
+        "verified_rag_flow.md"
+      ],
+      "verification_status": "supported",
+      "expected_verification_status": "supported",
+      "insufficient_context": false,
+      "expected_insufficient_context": false,
+      "cited_sources": [
+        "rag.md"
+      ],
+      "missing_required_terms": [],
+      "exception_type": null,
+      "exception_message": null,
+      "issues": [],
+      "failure_categories": []
+    },
+    {
+      "id": "verified_rag_flow",
+      "passed": true,
+      "question": "How does the verified RAG flow work?",
+      "answer_text": "The verified RAG flow works by first generating a grounded answer and then verifying whether the answer is supported by cited chunks.",
+      "expected_sources": [
+        "verified_rag_flow.md"
+      ],
+      "retrieved_sources": [
+        "rag.md",
+        "verified_rag_flow.md"
+      ],
+      "verification_status": "supported",
+      "expected_verification_status": "supported",
+      "insufficient_context": false,
+      "expected_insufficient_context": false,
+      "cited_sources": [
+        "verified_rag_flow.md"
+      ],
+      "missing_required_terms": [],
+      "exception_type": null,
+      "exception_message": null,
+      "issues": [],
+      "failure_categories": []
+    },
+    {
+      "id": "why_hybrid_retrieval",
+      "passed": true,
+      "question": "How does hybrid retrieval combine keyword and embedding retrieval?",
+      "answer_text": "Hybrid retrieval combines keyword and embedding retrieval by using both lexical matches and semantic similarity. `keyword_rank` identifies exact word matches between the question and document chunks, while `embedding_rank` measures semantic similarity using embeddings. These two rankings are then combined into a `hybrid_rank` using reciprocal rank fusion, with `keyword_weight` and `embedding_weight` controlling the influence of each ranking on the final score.",
+      "expected_sources": [
+        "hybrid_retrieval.md"
+      ],
+      "retrieved_sources": [
+        "hybrid_retrieval.md",
+        "models.md",
+        "rag.md",
+        "verified_rag_flow.md"
+      ],
+      "verification_status": "supported",
+      "expected_verification_status": "supported",
+      "insufficient_context": false,
+      "expected_insufficient_context": false,
+      "cited_sources": [
+        "hybrid_retrieval.md"
+      ],
+      "missing_required_terms": [],
+      "exception_type": null,
+      "exception_message": null,
+      "issues": [],
+      "failure_categories": []
+    },
+    {
+      "id": "unsupported_capital_of_japan",
+      "passed": true,
+      "question": "What is the capital of Japan?",
+      "answer_text": "The context does not provide information about the capital of Japan.",
+      "expected_sources": [],
+      "retrieved_sources": [
+        "models.md",
+        "verified_rag_flow.md"
+      ],
+      "verification_status": "supported",
+      "expected_verification_status": [
+        "supported"
+      ],
+      "insufficient_context": true,
+      "expected_insufficient_context": true,
+      "cited_sources": [],
+      "missing_required_terms": [],
+      "exception_type": null,
+      "exception_message": null,
+      "issues": [],
+      "failure_categories": []
+    }
+  ]
+}
